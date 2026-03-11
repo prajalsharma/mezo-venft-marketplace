@@ -18,9 +18,7 @@
   eslint: {
     ignoreDuringBuilds: true,
   },
-    experimental: {
-      serverComponentsExternalPackages: ["@mezo-org/passport", "@mezo-org/mezo-clay", "@mezo-org/orangekit"],
-    },
+   
     webpack: (config) => {
       config.resolve.alias = {
         ...config.resolve.alias,
