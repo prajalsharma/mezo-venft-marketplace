@@ -59,6 +59,9 @@ describe("VeNFTMarketplace Integration", function () {
     );
     await marketplace.waitForDeployment();
 
+    // Authorize marketplace as the sole caller of routePayment
+    await router.connect(admin).setMarketplace(await marketplace.getAddress());
+
     // Create veBTC position for seller
     const lockAmount = ethers.parseEther("1");
     const lockEnd = (await time.latest()) + 28 * 24 * 60 * 60;

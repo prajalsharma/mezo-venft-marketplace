@@ -37,7 +37,7 @@ export function ListingModal({ isOpen, onClose, veNFT }: ListingModalProps) {
   const { createListing, approveNFT, isPending, isConfirming, isSuccess } = useMarketplace();
   
   const [price, setPrice] = useState("");
-  const [paymentToken, setPaymentToken] = useState(PAYMENT_TOKENS[0].symbol);
+  const [paymentToken, setPaymentToken] = useState<"BTC" | "MEZO" | "MUSD">(PAYMENT_TOKENS[0].symbol);
   const [step, setStep] = useState<"approve" | "list">("approve");
 
   if (!veNFT) return null;

@@ -25,6 +25,10 @@ describe("PaymentRouter", function () {
     );
     await router.waitForDeployment();
 
+    // Authorize buyer as the marketplace caller so routePayment tests work.
+    // In production this is the VeNFTMarketplace contract address.
+    await router.connect(admin).setMarketplace(buyer.address);
+
     // Mint MUSD to buyer
     await musd.mint(buyer.address, ethers.parseEther("1000"));
 
@@ -254,6 +258,20 @@ describe("PaymentRouter", function () {
           1000
         )
       ).to.be.revertedWithCustomError(router, "InvalidAddress");
+    });
+
+    it("Should reject caller that is not the authorized marketplace", async function () {
+      const { router, musd, seller, owner } = await loadFixture(deployFixture);
+
+      // owner is not set as marketplace, so this should revert
+      await expect(
+        router.connect(owner).routePayment(
+          owner.address,
+          seller.address,
+          await musd.getAddress(),
+          ethers.parseEther("1")
+        )
+      ).to.be.revertedWithCustomError(router, "Unauthorized");
     });
   });
 });

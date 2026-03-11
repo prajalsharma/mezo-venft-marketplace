@@ -18,7 +18,7 @@ import {
   XCircle,
   ArrowRight
 } from "lucide-react";
-import { useMarketplace, useListing } from "@/hooks/useMarketplace";
+import { useMarketplace, useListing, useUserVeNFTs } from "@/hooks/useMarketplace";
 import { ListingModal } from "@/components/ListingModal";
 import { VeNFTCard } from "@/components/VeNFTCard";
 
@@ -65,15 +65,9 @@ function UserListingItem({ listingId }: { listingId: number }) {
 export default function MyListingsClient() {
   const { isConnected, address } = useAccount();
   const { userListingIds } = useMarketplace();
+  const { veNFTs: walletVeNFTs, isLoading: veNFTsLoading } = useUserVeNFTs();
   const [isListingModalOpen, setIsListingModalOpen] = useState(false);
   const [selectedVeNFT, setSelectedVeNFT] = useState<any>(null);
-
-  // Mock veNFTs in wallet for listing flow demo
-  // In a real app, these would come from useUserVeNFTs and an indexer
-  const walletVeNFTs = [
-    { tokenId: 452n, collection: "veBTC" as const, intrinsicValue: 500000000000000000n, votingPower: 450000000000000000n, lockEnd: BigInt(Math.floor(Date.now() / 1000) + 15 * 86400) },
-    { tokenId: 89n, collection: "veMEZO" as const, intrinsicValue: 250000000000000000000n, votingPower: 50000000000000000000n, lockEnd: BigInt(Math.floor(Date.now() / 1000) + 400 * 86400) },
-  ];
 
   if (!isConnected) {
     return (
@@ -146,30 +140,43 @@ export default function MyListingsClient() {
                 <Wallet className="w-4 h-4" />
                 In Your Wallet
               </div>
-              
-              <div className="grid sm:grid-cols-2 gap-6">
-                {walletVeNFTs.map((nft) => (
-                  <div key={nft.tokenId.toString()} className="glass-card p-6 rounded-3xl relative overflow-hidden group">
-                    <div className="flex justify-between items-start mb-6">
-                      <div>
-                        <h4 className="font-bold text-lg">{nft.collection} #{nft.tokenId.toString()}</h4>
-                        <p className="text-xs text-mezo-muted mt-1">Locked position ready for listing</p>
+
+              {veNFTsLoading ? (
+                <div className="grid sm:grid-cols-2 gap-6">
+                  {[0, 1].map((i) => (
+                    <div key={i} className="glass-card p-6 rounded-3xl h-40 animate-pulse" />
+                  ))}
+                </div>
+              ) : walletVeNFTs.length === 0 ? (
+                <div className="glass-card rounded-[2rem] p-12 text-center border-dashed border-mezo-border">
+                  <Wallet className="w-10 h-10 text-mezo-muted mx-auto mb-4" />
+                  <p className="text-mezo-muted">No veBTC or veMEZO positions found in your wallet.</p>
+                </div>
+              ) : (
+                <div className="grid sm:grid-cols-2 gap-6">
+                  {walletVeNFTs.map((nft) => (
+                    <div key={`${nft.collection}-${nft.tokenId.toString()}`} className="glass-card p-6 rounded-3xl relative overflow-hidden group">
+                      <div className="flex justify-between items-start mb-6">
+                        <div>
+                          <h4 className="font-bold text-lg">{nft.collection} #{nft.tokenId.toString()}</h4>
+                          <p className="text-xs text-mezo-muted mt-1">Locked position ready for listing</p>
+                        </div>
+                        <div className={`p-2 rounded-lg ${nft.collection === 'veBTC' ? 'bg-mezo-primary/10 text-mezo-primary' : 'bg-mezo-accent/10 text-mezo-accent'}`}>
+                          <Zap className="w-4 h-4" />
+                        </div>
                       </div>
-                      <div className={`p-2 rounded-lg ${nft.collection === 'veBTC' ? 'bg-mezo-primary/10 text-mezo-primary' : 'bg-mezo-accent/10 text-mezo-accent'}`}>
-                        <Zap className="w-4 h-4" />
-                      </div>
+
+                      <button
+                        onClick={() => { setSelectedVeNFT(nft); setIsListingModalOpen(true); }}
+                        className="w-full flex items-center justify-center gap-2 py-3 bg-white text-black font-bold rounded-xl hover:bg-mezo-primary hover:text-white transition-all"
+                      >
+                        <Plus className="w-4 h-4" />
+                        List for Sale
+                      </button>
                     </div>
-                    
-                    <button
-                      onClick={() => { setSelectedVeNFT(nft); setIsListingModalOpen(true); }}
-                      className="w-full flex items-center justify-center gap-2 py-3 bg-white text-black font-bold rounded-xl hover:bg-mezo-primary hover:text-white transition-all"
-                    >
-                      <Plus className="w-4 h-4" />
-                      List for Sale
-                    </button>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </section>
           </div>
 

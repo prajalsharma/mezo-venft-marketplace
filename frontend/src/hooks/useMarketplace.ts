@@ -1,6 +1,6 @@
 "use client";
 
-import { useReadContract, useWriteContract, useAccount, useWaitForTransactionReceipt } from "wagmi";
+import { useReadContract, useReadContracts, useWriteContract, useAccount, useWaitForTransactionReceipt } from "wagmi";
 import { useNetwork } from "./useNetwork";
 
 // ABI fragments for the contracts we need
@@ -382,33 +382,115 @@ export function useListing(listingId: number) {
   return { listing: fullListing, isLoading };
 }
 
-// Hook to get user's veNFTs from their wallet (unlisted)
+// ABI fragment for tokensOfOwner (present on both veBTC and veMEZO)
+const VOTING_ESCROW_ABI = [
+  {
+    name: "tokensOfOwner",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "owner", type: "address" }],
+    outputs: [{ type: "uint256[]" }],
+  },
+] as const;
+
+export interface WalletVeNFT {
+  tokenId: bigint;
+  collection: "veBTC" | "veMEZO";
+  nftContract: string;
+  intrinsicValue: bigint;
+  votingPower: bigint;
+  lockEnd: bigint;
+}
+
+// Hook to get user's veNFTs from their wallet with full position data
 export function useUserVeNFTs() {
   const { address } = useAccount();
   const { contracts } = useNetwork();
-  
+
   const veBTCAddress = contracts.veBTC as `0x${string}`;
   const veMEZOAddress = contracts.veMEZO as `0x${string}`;
+  const adapterAddress = contracts.adapter as `0x${string}`;
+  const isAdapterDeployed =
+    adapterAddress !== "0x0000000000000000000000000000000000000000";
 
-  const { data: veBTCBalance } = useReadContract({
+  // Fetch token IDs owned by the user for each collection
+  const { data: veBTCTokenIds, isLoading: veBTCLoading } = useReadContract({
     address: veBTCAddress,
-    abi: ERC721_ABI,
-    functionName: "balanceOf",
+    abi: VOTING_ESCROW_ABI,
+    functionName: "tokensOfOwner",
     args: address ? [address] : undefined,
     query: { enabled: !!address },
   });
 
-  const { data: veMEZOBalance } = useReadContract({
+  const { data: veMEZOTokenIds, isLoading: veMEZOLoading } = useReadContract({
     address: veMEZOAddress,
-    abi: ERC721_ABI,
-    functionName: "balanceOf",
+    abi: VOTING_ESCROW_ABI,
+    functionName: "tokensOfOwner",
     args: address ? [address] : undefined,
     query: { enabled: !!address },
+  });
+
+  // Build a flat list of { collection, nftContract, tokenId } pairs
+  const tokenPairs: { collection: "veBTC" | "veMEZO"; nftContract: `0x${string}`; tokenId: bigint }[] = [
+    ...((veBTCTokenIds as bigint[] | undefined) ?? []).map((id) => ({
+      collection: "veBTC" as const,
+      nftContract: veBTCAddress,
+      tokenId: id,
+    })),
+    ...((veMEZOTokenIds as bigint[] | undefined) ?? []).map((id) => ({
+      collection: "veMEZO" as const,
+      nftContract: veMEZOAddress,
+      tokenId: id,
+    })),
+  ];
+
+  // Build multicall contracts array for intrinsic value + voting power
+  // useReadContracts accepts a dynamic array — no hooks-in-map needed
+  const adapterCalls = tokenPairs.flatMap((pair) => [
+    {
+      address: adapterAddress,
+      abi: ADAPTER_ABI,
+      functionName: "getIntrinsicValue" as const,
+      args: [pair.nftContract, pair.tokenId] as const,
+    },
+    {
+      address: adapterAddress,
+      abi: ADAPTER_ABI,
+      functionName: "getVotingPower" as const,
+      args: [pair.nftContract, pair.tokenId] as const,
+    },
+  ]);
+
+  const { data: adapterResults, isLoading: adapterLoading } = useReadContracts({
+    contracts: adapterCalls,
+    query: { enabled: isAdapterDeployed && tokenPairs.length > 0 },
+  });
+
+  const isLoading = veBTCLoading || veMEZOLoading || adapterLoading;
+
+  const veNFTs: WalletVeNFT[] = tokenPairs.map((pair, i) => {
+    const intrinsicRaw = adapterResults?.[i * 2]?.result;
+    const votingPowerRaw = adapterResults?.[i * 2 + 1]?.result;
+
+    const [intrinsicValue, lockEnd] =
+      (intrinsicRaw as [bigint, bigint] | undefined) ?? [0n, 0n];
+    const votingPower = (votingPowerRaw as bigint | undefined) ?? 0n;
+
+    return {
+      tokenId: pair.tokenId,
+      collection: pair.collection,
+      nftContract: pair.nftContract,
+      intrinsicValue,
+      votingPower,
+      lockEnd,
+    };
   });
 
   return {
-    veBTCBalance: veBTCBalance ? Number(veBTCBalance) : 0,
-    veMEZOBalance: veMEZOBalance ? Number(veMEZOBalance) : 0,
-    totalVeNFTs: (veBTCBalance ? Number(veBTCBalance) : 0) + (veMEZOBalance ? Number(veMEZOBalance) : 0),
+    veNFTs,
+    isLoading,
+    veBTCCount: (veBTCTokenIds as bigint[] | undefined)?.length ?? 0,
+    veMEZOCount: (veMEZOTokenIds as bigint[] | undefined)?.length ?? 0,
+    totalVeNFTs: tokenPairs.length,
   };
 }
