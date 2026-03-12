@@ -79,6 +79,10 @@ Four modular smart contracts — adapted from the OpenXSwap audited pattern for 
 | MUSD | `0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503` |
 | veBTC (ERC-721) | `0x38E35d92E6Bfc6787272A62345856B13eA12130a` |
 | veMEZO (ERC-721) | `0xaCE816CA2bcc9b12C59799dcC5A959Fb9b98111b` |
+| **VeNFTMarketplace** | **`0xcFbAf5F9563AFa8E4CD1861876a6BD011aA00ddb`** |
+| **MezoVeNFTAdapter** | **`0x3B302be6d65CeAF32310A7F37E332EdbBA3759E3`** |
+| **PaymentRouter** | **`0xDcB630Bf1f306D215A81A998D235Eb457fe10619`** |
+| **MarketplaceAdmin** | **`0x21943576a5152f6E1503B3b800Fd7830ab2dD7ce`** |
 | RPC | `https://rpc.test.mezo.org` |
 | Explorer | `https://explorer.test.mezo.org` |
 | Faucet | `https://faucet.test.mezo.org` |
@@ -172,13 +176,16 @@ This script:
 
 ### 3. Update Frontend `.env`
 
-After deployment, copy addresses from `deployments/testnet.json` into `frontend/.env.local`:
+After deployment, copy addresses from `deployments/testnet.json` into `frontend/.env.local`.
+
+The testnet deployment is already live — use these values directly:
 
 ```env
-NEXT_PUBLIC_MARKETPLACE_TESTNET=0x...
-NEXT_PUBLIC_ADAPTER_TESTNET=0x...
-NEXT_PUBLIC_ROUTER_TESTNET=0x...
-NEXT_PUBLIC_ADMIN_TESTNET=0x...
+NEXT_PUBLIC_WALLETCONNECT_ID=1d704aa13ff6d856e2935a85987c34ec
+NEXT_PUBLIC_MARKETPLACE_TESTNET=0xcFbAf5F9563AFa8E4CD1861876a6BD011aA00ddb
+NEXT_PUBLIC_ADAPTER_TESTNET=0x3B302be6d65CeAF32310A7F37E332EdbBA3759E3
+NEXT_PUBLIC_ROUTER_TESTNET=0xDcB630Bf1f306D215A81A998D235Eb457fe10619
+NEXT_PUBLIC_ADMIN_TESTNET=0x21943576a5152f6E1503B3b800Fd7830ab2dD7ce
 ```
 
 ### 4. Deploy to Mainnet
@@ -258,7 +265,19 @@ Introduced a read-only adapter that queries Mezo's `IVotingEscrow` interface (ve
 | Seller could buy own listing | **Medium** | `SelfPurchase` guard added |
 | Ownership not re-validated at buy time | **Medium** | `ownerOf` check before state mutation in `buyNFT` |
 
-#### 4. `MarketplaceAdmin` — Role Segregation
+#### 4. `IVotingEscrow` Interface — Velodrome v2 Compatibility
+
+The deployed veBTC and veMEZO contracts are EIP-1967 proxies over a Velodrome v2 fork. Two interface differences from Velodrome v1 (which OpenXSwap targets) required frontend-level workarounds rather than adapter changes:
+
+| Function | v1 / OpenXSwap | Deployed Mezo contracts | Resolution |
+|---|---|---|---|
+| Token enumeration | `tokensOfOwner(address)` | Not present | Use `balanceOf(address)` + `ownerToNFTokenIdList(address,uint256)` |
+| Per-NFT voting power | `balanceOfNFT(uint256)` | Not present | Compute from `locked()` data: `amount × (end − now) / MAXTIME` |
+| Lock struct | `(int128 amount, uint256 end)` | `(int128 amount, uint256 end, bool isPermanent, int128 delegatedBalance)` | Adapter reads only words 0–1; frontend handles `isPermanent` (end=0) |
+
+`getIntrinsicValue`, `isExpired`, `isSupported`, and all ERC-721 functions (`approve`, `safeTransferFrom`, `ownerOf`, `getApproved`) are present and work correctly.
+
+#### 5. `MarketplaceAdmin` — Role Segregation
 Enhanced access control to separate `PAUSER_ROLE`, `FEE_MANAGER_ROLE`, and `COLLECTION_MANAGER_ROLE` for operational security. Added 48-hour timelock on all fee changes.
 
 ### Security Checklist

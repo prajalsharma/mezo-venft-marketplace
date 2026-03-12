@@ -43,7 +43,11 @@ export function VeNFTCard({
   onBuy,
 }: VeNFTCardProps) {
   const isVeBTC = collection === "veBTC";
-  const isExpired = Number(lockEnd) <= Math.floor(Date.now() / 1000);
+  // lockEnd is a Unix timestamp in seconds from the contract.
+  // Guard against 0n (adapter data not yet loaded) — treat as not expired
+  // so cards don't flash "expired" during the initial fetch.
+  const lockEndSec = Number(lockEnd);
+  const isExpired = lockEndSec > 0 && lockEndSec <= Math.floor(Date.now() / 1000);
 
   const formattedPrice = parseFloat(formatEther(price)).toFixed(4);
   const formattedIntrinsic = parseFloat(formatEther(intrinsicValue)).toFixed(4);

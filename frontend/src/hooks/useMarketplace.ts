@@ -3,7 +3,8 @@
 import { useReadContract, useReadContracts, useWriteContract, useAccount, useWaitForTransactionReceipt } from "wagmi";
 import { useNetwork } from "./useNetwork";
 
-// ABI fragments for the contracts we need
+// ─── Marketplace ABI ──────────────────────────────────────────────────────────
+
 const MARKETPLACE_ABI = [
   {
     name: "nextListingId",
@@ -62,6 +63,11 @@ const MARKETPLACE_ABI = [
   },
 ] as const;
 
+// ─── Adapter ABI ──────────────────────────────────────────────────────────────
+// getVotingPower is intentionally omitted — it calls balanceOfNFT which does not
+// exist on the deployed veBTC/veMEZO contracts (Velodrome v2 fork).
+// Voting power is computed in the frontend from locked() data instead.
+
 const ADAPTER_ABI = [
   {
     name: "getIntrinsicValue",
@@ -72,21 +78,13 @@ const ADAPTER_ABI = [
       { name: "tokenId", type: "uint256" },
     ],
     outputs: [
-        { name: "value", type: "uint256" },
-        { name: "lockEnd", type: "uint256" }
+      { name: "amount", type: "uint256" },
+      { name: "lockEnd", type: "uint256" },
     ],
-  },
-  {
-    name: "getVotingPower",
-    type: "function",
-    stateMutability: "view",
-    inputs: [
-      { name: "collection", type: "address" },
-      { name: "tokenId", type: "uint256" },
-    ],
-    outputs: [{ type: "uint256" }],
   },
 ] as const;
+
+// ─── ERC-721 ABI ──────────────────────────────────────────────────────────────
 
 const ERC721_ABI = [
   {
@@ -114,6 +112,7 @@ const ERC721_ABI = [
     outputs: [{ type: "address" }],
   },
   {
+    // Standard ERC-721 balanceOf — returns token count for an address
     name: "balanceOf",
     type: "function",
     stateMutability: "view",
@@ -121,6 +120,36 @@ const ERC721_ABI = [
     outputs: [{ type: "uint256" }],
   },
 ] as const;
+
+// ─── VotingEscrow enumeration ABI ─────────────────────────────────────────────
+// The deployed veBTC/veMEZO contracts are Velodrome v2 forks.
+// They do NOT have tokensOfOwner(address). Instead they expose:
+//   balanceOf(address)                    → token count
+//   ownerToNFTokenIdList(address,uint256) → tokenId at index
+
+const VOTING_ESCROW_ENUM_ABI = [
+  {
+    // Returns number of NFTs owned by address (ERC-721 standard)
+    name: "balanceOf",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "owner", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    // Returns tokenId at index i for owner (Velodrome v2 enumeration)
+    name: "ownerToNFTokenIdList",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      { name: "owner", type: "address" },
+      { name: "index", type: "uint256" },
+    ],
+    outputs: [{ type: "uint256" }],
+  },
+] as const;
+
+// ─── ERC-20 ABI ───────────────────────────────────────────────────────────────
 
 const ERC20_ABI = [
   {
@@ -152,6 +181,34 @@ const ERC20_ABI = [
   },
 ] as const;
 
+// ─── Voting power computation ─────────────────────────────────────────────────
+// Derived from locked() data returned by getIntrinsicValue.
+// Velodrome v2: VP = amount * (end - now) / MAXTIME  (for timed locks)
+//               VP = amount                           (for permanent locks, end=0)
+// veBTC MAXTIME = 28 days, veMEZO MAXTIME = 4 years (1456 days)
+
+const VEBTC_MAXTIME  = BigInt(28 * 24 * 60 * 60);   // 28 days in seconds
+const VEMEZO_MAXTIME = BigInt(1456 * 24 * 60 * 60);  // 4 years in seconds
+
+export function computeVotingPower(
+  amount: bigint,
+  lockEnd: bigint,
+  isVeBTC: boolean
+): bigint {
+  if (amount === 0n) return 0n;
+  // Permanent lock (end=0): full voting power equals locked amount
+  if (lockEnd === 0n) return amount;
+  const now = BigInt(Math.floor(Date.now() / 1000));
+  if (lockEnd <= now) return 0n; // expired
+  const remaining = lockEnd - now;
+  const maxTime = isVeBTC ? VEBTC_MAXTIME : VEMEZO_MAXTIME;
+  // Cap at maxTime to avoid > 100% for locks longer than max
+  const capped = remaining > maxTime ? maxTime : remaining;
+  return (amount * capped) / maxTime;
+}
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
 export interface Listing {
   listingId: number;
   seller: string;
@@ -168,7 +225,6 @@ export interface Listing {
   discountBps: bigint;
 }
 
-// Type for the listing tuple returned by the contract
 interface ListingTuple {
   seller: `0x${string}`;
   collection: `0x${string}`;
@@ -179,6 +235,17 @@ interface ListingTuple {
   active: boolean;
 }
 
+export interface WalletVeNFT {
+  tokenId: bigint;
+  collection: "veBTC" | "veMEZO";
+  nftContract: string;
+  intrinsicValue: bigint;
+  votingPower: bigint;
+  lockEnd: bigint;
+}
+
+// ─── useMarketplace ───────────────────────────────────────────────────────────
+
 export function useMarketplace() {
   const { contracts } = useNetwork();
   const { address } = useAccount();
@@ -188,7 +255,6 @@ export function useMarketplace() {
   const marketplaceAddress = contracts.marketplace as `0x${string}` | undefined;
   const adapterAddress = contracts.adapter as `0x${string}` | undefined;
 
-  // Get listing count
   const { data: nextListingId, refetch: refetchCount } = useReadContract({
     address: marketplaceAddress,
     abi: MARKETPLACE_ABI,
@@ -198,7 +264,6 @@ export function useMarketplace() {
     },
   });
 
-  // Create a listing
   const createListing = async (
     collection: string,
     tokenId: bigint,
@@ -206,7 +271,6 @@ export function useMarketplace() {
     paymentToken: string
   ) => {
     if (!marketplaceAddress) throw new Error("Marketplace not deployed");
-
     writeContract({
       address: marketplaceAddress,
       abi: MARKETPLACE_ABI,
@@ -215,48 +279,23 @@ export function useMarketplace() {
     });
   };
 
-  // Buy a listing
+  // Buy with native BTC (single tx, attach msg.value)
   const buyListing = async (listingId: number, price: bigint, isNativePayment: boolean) => {
     if (!marketplaceAddress) throw new Error("Marketplace not deployed");
-
     writeContract({
       address: marketplaceAddress,
       abi: MARKETPLACE_ABI,
       functionName: "buyNFT",
       args: [BigInt(listingId)],
-      value: isNativePayment ? price : BigInt(0),
+      value: isNativePayment ? price : undefined,
     });
   };
 
-  // Cancel a listing
-  const cancelListing = async (listingId: number) => {
-    if (!marketplaceAddress) throw new Error("Marketplace not deployed");
-
-    writeContract({
-      address: marketplaceAddress,
-      abi: MARKETPLACE_ABI,
-      functionName: "cancelListing",
-      args: [BigInt(listingId)],
-    });
-  };
-
-  // Approve NFT for marketplace
-  const approveNFT = async (collection: string, tokenId: bigint) => {
-    if (!marketplaceAddress) throw new Error("Marketplace not deployed");
-
-    writeContract({
-      address: collection as `0x${string}`,
-      abi: ERC721_ABI,
-      functionName: "approve",
-      args: [marketplaceAddress, tokenId],
-    });
-  };
-
-  // Approve ERC20 for router
-  const approveToken = async (tokenAddress: string, amount: bigint) => {
+  // Step 1 of ERC-20 buy: approve the PaymentRouter to spend the token
+  const approveTokenForBuy = async (tokenAddress: string, amount: bigint) => {
     const routerAddress = contracts.router as `0x${string}`;
-    if (!routerAddress) throw new Error("Router not deployed");
-
+    if (!routerAddress || routerAddress === "0x0000000000000000000000000000000000000000")
+      throw new Error("Router not deployed");
     writeContract({
       address: tokenAddress as `0x${string}`,
       abi: ERC20_ABI,
@@ -265,7 +304,49 @@ export function useMarketplace() {
     });
   };
 
-  // Get user's listing IDs
+  // Step 2 of ERC-20 buy: call buyNFT after approval is confirmed
+  const executeBuy = async (listingId: number) => {
+    if (!marketplaceAddress) throw new Error("Marketplace not deployed");
+    writeContract({
+      address: marketplaceAddress,
+      abi: MARKETPLACE_ABI,
+      functionName: "buyNFT",
+      args: [BigInt(listingId)],
+    });
+  };
+
+  const cancelListing = async (listingId: number) => {
+    if (!marketplaceAddress) throw new Error("Marketplace not deployed");
+    writeContract({
+      address: marketplaceAddress,
+      abi: MARKETPLACE_ABI,
+      functionName: "cancelListing",
+      args: [BigInt(listingId)],
+    });
+  };
+
+  const approveNFT = async (collection: string, tokenId: bigint) => {
+    if (!marketplaceAddress) throw new Error("Marketplace not deployed");
+    writeContract({
+      address: collection as `0x${string}`,
+      abi: ERC721_ABI,
+      functionName: "approve",
+      args: [marketplaceAddress, tokenId],
+    });
+  };
+
+  const approveToken = async (tokenAddress: string, amount: bigint) => {
+    const routerAddress = contracts.router as `0x${string}`;
+    if (!routerAddress || routerAddress === "0x0000000000000000000000000000000000000000")
+      throw new Error("Router not deployed");
+    writeContract({
+      address: tokenAddress as `0x${string}`,
+      abi: ERC20_ABI,
+      functionName: "approve",
+      args: [routerAddress, amount],
+    });
+  };
+
   const { data: userListingIds, refetch: refetchUserListings } = useReadContract({
     address: marketplaceAddress,
     abi: MARKETPLACE_ABI,
@@ -283,6 +364,8 @@ export function useMarketplace() {
     userListingIds: userListingIds as bigint[] | undefined,
     createListing,
     buyListing,
+    approveTokenForBuy,
+    executeBuy,
     cancelListing,
     approveNFT,
     approveToken,
@@ -292,11 +375,12 @@ export function useMarketplace() {
     isConfirming,
     isSuccess,
     hash,
-    error
+    error,
   };
 }
 
-// Hook to get a single listing with veNFT data
+// ─── useListing ───────────────────────────────────────────────────────────────
+
 export function useListing(listingId: number) {
   const { contracts } = useNetwork();
 
@@ -313,23 +397,23 @@ export function useListing(listingId: number) {
     },
   });
 
-  // Cast the listing data to our expected type
   const listingArray = listingData as any[] | undefined;
-  
-  const listing: ListingTuple | undefined = listingArray ? {
-    seller: listingArray[0],
-    collection: listingArray[1],
-    tokenId: listingArray[2],
-    price: listingArray[3],
-    paymentToken: listingArray[4],
-    createdAt: listingArray[5],
-    active: listingArray[6],
-  } : undefined;
+  const listing: ListingTuple | undefined = listingArray
+    ? {
+        seller: listingArray[0],
+        collection: listingArray[1],
+        tokenId: listingArray[2],
+        price: listingArray[3],
+        paymentToken: listingArray[4],
+        createdAt: listingArray[5],
+        active: listingArray[6],
+      }
+    : undefined;
 
   const collection = listing?.collection;
   const tokenId = listing?.tokenId;
 
-  // Get intrinsic value and lock end
+  // getIntrinsicValue returns (amount, lockEnd) — works correctly on deployed contracts
   const { data: adapterData } = useReadContract({
     address: adapterAddress,
     abi: ADAPTER_ABI,
@@ -340,28 +424,18 @@ export function useListing(listingId: number) {
     },
   });
 
-  const [intrinsicValue, lockEnd] = (adapterData as [bigint, bigint] | undefined) || [BigInt(0), BigInt(0)];
+  const [intrinsicValue, lockEnd] = (adapterData as [bigint, bigint] | undefined) ?? [0n, 0n];
 
-  // Get voting power
-  const { data: votingPower } = useReadContract({
-    address: adapterAddress,
-    abi: ADAPTER_ABI,
-    functionName: "getVotingPower",
-    args: collection && tokenId !== undefined ? [collection, tokenId] : undefined,
-    query: {
-      enabled: !!adapterAddress && !!collection && tokenId !== undefined,
-    },
-  });
-
-  if (!listing) {
-    return { listing: null, isLoading };
-  }
+  if (!listing) return { listing: null, isLoading };
 
   const price = listing.price;
-  const iv = intrinsicValue || BigInt(0);
-  const discountBps = iv > BigInt(0) ? ((iv - price) * BigInt(10000)) / iv : BigInt(0);
-
+  const iv = intrinsicValue ?? 0n;
+  const discountBps = iv > 0n ? ((iv - price) * 10000n) / iv : 0n;
   const isVeBTC = collection?.toLowerCase() === contracts.veBTC.toLowerCase();
+
+  // Compute voting power from locked() data — avoids calling balanceOfNFT which
+  // does not exist on the deployed Velodrome v2 veBTC/veMEZO contracts
+  const votingPower = computeVotingPower(iv, lockEnd, isVeBTC ?? true);
 
   const fullListing: Listing = {
     listingId,
@@ -374,107 +448,113 @@ export function useListing(listingId: number) {
     active: listing.active,
     createdAt: listing.createdAt,
     intrinsicValue: iv,
-    votingPower: (votingPower as bigint) || BigInt(0),
-    lockEnd: lockEnd,
+    votingPower,
+    lockEnd,
     discountBps,
   };
 
   return { listing: fullListing, isLoading };
 }
 
-// ABI fragment for tokensOfOwner (present on both veBTC and veMEZO)
-const VOTING_ESCROW_ABI = [
-  {
-    name: "tokensOfOwner",
-    type: "function",
-    stateMutability: "view",
-    inputs: [{ name: "owner", type: "address" }],
-    outputs: [{ type: "uint256[]" }],
-  },
-] as const;
+// ─── useUserVeNFTs ────────────────────────────────────────────────────────────
+// Enumerates the connected wallet's veBTC and veMEZO positions.
+//
+// The deployed contracts are Velodrome v2 forks and do NOT have tokensOfOwner().
+// Enumeration uses: balanceOf(address) → count, then ownerToNFTokenIdList(address,i)
+// for each index. We cap at 50 tokens per collection to bound multicall size.
 
-export interface WalletVeNFT {
-  tokenId: bigint;
-  collection: "veBTC" | "veMEZO";
-  nftContract: string;
-  intrinsicValue: bigint;
-  votingPower: bigint;
-  lockEnd: bigint;
-}
+const MAX_TOKENS_PER_COLLECTION = 50;
 
-// Hook to get user's veNFTs from their wallet with full position data
 export function useUserVeNFTs() {
   const { address } = useAccount();
   const { contracts } = useNetwork();
 
-  const veBTCAddress = contracts.veBTC as `0x${string}`;
+  const veBTCAddress  = contracts.veBTC  as `0x${string}`;
   const veMEZOAddress = contracts.veMEZO as `0x${string}`;
   const adapterAddress = contracts.adapter as `0x${string}`;
   const isAdapterDeployed =
     adapterAddress !== "0x0000000000000000000000000000000000000000";
 
-  // Fetch token IDs owned by the user for each collection
-  const { data: veBTCTokenIds, isLoading: veBTCLoading } = useReadContract({
+  // Step 1: get token counts via ERC-721 balanceOf
+  const { data: veBTCCount, isLoading: veBTCCountLoading } = useReadContract({
     address: veBTCAddress,
-    abi: VOTING_ESCROW_ABI,
-    functionName: "tokensOfOwner",
+    abi: VOTING_ESCROW_ENUM_ABI,
+    functionName: "balanceOf",
     args: address ? [address] : undefined,
     query: { enabled: !!address },
   });
 
-  const { data: veMEZOTokenIds, isLoading: veMEZOLoading } = useReadContract({
+  const { data: veMEZOCount, isLoading: veMEZOCountLoading } = useReadContract({
     address: veMEZOAddress,
-    abi: VOTING_ESCROW_ABI,
-    functionName: "tokensOfOwner",
+    abi: VOTING_ESCROW_ENUM_ABI,
+    functionName: "balanceOf",
     args: address ? [address] : undefined,
     query: { enabled: !!address },
   });
 
-  // Build a flat list of { collection, nftContract, tokenId } pairs
-  const tokenPairs: { collection: "veBTC" | "veMEZO"; nftContract: `0x${string}`; tokenId: bigint }[] = [
-    ...((veBTCTokenIds as bigint[] | undefined) ?? []).map((id) => ({
-      collection: "veBTC" as const,
-      nftContract: veBTCAddress,
-      tokenId: id,
+  const veBTCCountNum  = Math.min(Number(veBTCCount  ?? 0n), MAX_TOKENS_PER_COLLECTION);
+  const veMEZOCountNum = Math.min(Number(veMEZOCount ?? 0n), MAX_TOKENS_PER_COLLECTION);
+
+  // Step 2: fetch each tokenId via ownerToNFTokenIdList(address, index)
+  const enumCalls = [
+    ...Array.from({ length: veBTCCountNum }, (_, i) => ({
+      address: veBTCAddress,
+      abi: VOTING_ESCROW_ENUM_ABI,
+      functionName: "ownerToNFTokenIdList" as const,
+      args: [address!, BigInt(i)] as const,
     })),
-    ...((veMEZOTokenIds as bigint[] | undefined) ?? []).map((id) => ({
-      collection: "veMEZO" as const,
-      nftContract: veMEZOAddress,
-      tokenId: id,
+    ...Array.from({ length: veMEZOCountNum }, (_, i) => ({
+      address: veMEZOAddress,
+      abi: VOTING_ESCROW_ENUM_ABI,
+      functionName: "ownerToNFTokenIdList" as const,
+      args: [address!, BigInt(i)] as const,
     })),
   ];
 
-  // Build multicall contracts array for intrinsic value + voting power
-  // useReadContracts accepts a dynamic array — no hooks-in-map needed
-  const adapterCalls = tokenPairs.flatMap((pair) => [
-    {
-      address: adapterAddress,
-      abi: ADAPTER_ABI,
-      functionName: "getIntrinsicValue" as const,
-      args: [pair.nftContract, pair.tokenId] as const,
-    },
-    {
-      address: adapterAddress,
-      abi: ADAPTER_ABI,
-      functionName: "getVotingPower" as const,
-      args: [pair.nftContract, pair.tokenId] as const,
-    },
-  ]);
+  const { data: enumResults, isLoading: enumLoading } = useReadContracts({
+    contracts: enumCalls,
+    query: { enabled: !!address && (veBTCCountNum + veMEZOCountNum) > 0 },
+  });
 
-  const { data: adapterResults, isLoading: adapterLoading } = useReadContracts({
-    contracts: adapterCalls,
+  // Build token pairs from enumeration results
+  const tokenPairs: { collection: "veBTC" | "veMEZO"; nftContract: `0x${string}`; tokenId: bigint }[] = [];
+
+  if (enumResults) {
+    for (let i = 0; i < veBTCCountNum; i++) {
+      const tid = enumResults[i]?.result as bigint | undefined;
+      if (tid != null && tid > 0n) {
+        tokenPairs.push({ collection: "veBTC", nftContract: veBTCAddress, tokenId: tid });
+      }
+    }
+    for (let i = 0; i < veMEZOCountNum; i++) {
+      const tid = enumResults[veBTCCountNum + i]?.result as bigint | undefined;
+      if (tid != null && tid > 0n) {
+        tokenPairs.push({ collection: "veMEZO", nftContract: veMEZOAddress, tokenId: tid });
+      }
+    }
+  }
+
+  // Step 3: fetch intrinsicValue + lockEnd for each token via adapter.getIntrinsicValue
+  // (getVotingPower is intentionally skipped — it reverts on deployed contracts)
+  const intrinsicCalls = tokenPairs.map((pair) => ({
+    address: adapterAddress,
+    abi: ADAPTER_ABI,
+    functionName: "getIntrinsicValue" as const,
+    args: [pair.nftContract, pair.tokenId] as const,
+  }));
+
+  const { data: intrinsicResults, isLoading: intrinsicLoading } = useReadContracts({
+    contracts: intrinsicCalls,
     query: { enabled: isAdapterDeployed && tokenPairs.length > 0 },
   });
 
-  const isLoading = veBTCLoading || veMEZOLoading || adapterLoading;
+  const isLoading = veBTCCountLoading || veMEZOCountLoading || enumLoading || intrinsicLoading;
 
   const veNFTs: WalletVeNFT[] = tokenPairs.map((pair, i) => {
-    const intrinsicRaw = adapterResults?.[i * 2]?.result;
-    const votingPowerRaw = adapterResults?.[i * 2 + 1]?.result;
-
-    const [intrinsicValue, lockEnd] =
-      (intrinsicRaw as [bigint, bigint] | undefined) ?? [0n, 0n];
-    const votingPower = (votingPowerRaw as bigint | undefined) ?? 0n;
+    const raw = intrinsicResults?.[i]?.result as [bigint, bigint] | undefined;
+    const [intrinsicValue, lockEnd] = raw ?? [0n, 0n];
+    const isVeBTC = pair.collection === "veBTC";
+    const votingPower = computeVotingPower(intrinsicValue, lockEnd, isVeBTC);
 
     return {
       tokenId: pair.tokenId,
@@ -489,8 +569,8 @@ export function useUserVeNFTs() {
   return {
     veNFTs,
     isLoading,
-    veBTCCount: (veBTCTokenIds as bigint[] | undefined)?.length ?? 0,
-    veMEZOCount: (veMEZOTokenIds as bigint[] | undefined)?.length ?? 0,
+    veBTCCount: veBTCCountNum,
+    veMEZOCount: veMEZOCountNum,
     totalVeNFTs: tokenPairs.length,
   };
 }
