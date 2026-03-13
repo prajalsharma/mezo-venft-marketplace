@@ -42,9 +42,13 @@ contract MezoVeNFTAdapter is IMezoVeNFTAdapter {
         uint256 tokenId
     ) external view override returns (uint256 amount, uint256 lockEnd) {
         _requireSupported(collection);
-        IVotingEscrow.LockedBalance memory lock = IVotingEscrow(collection).locked(tokenId);
-        amount = uint256(uint128(lock.amount));
-        lockEnd = lock.end;
+        try IVotingEscrow(collection).locked(tokenId) returns (IVotingEscrow.LockedBalance memory lock) {
+            amount = uint256(uint128(lock.amount));
+            lockEnd = lock.end;
+        } catch {
+            amount = 0;
+            lockEnd = 0;
+        }
     }
 
     /// @inheritdoc IMezoVeNFTAdapter
@@ -53,14 +57,24 @@ contract MezoVeNFTAdapter is IMezoVeNFTAdapter {
         uint256 tokenId
     ) external view override returns (uint256) {
         _requireSupported(collection);
-        return IVotingEscrow(collection).balanceOfNFT(tokenId);
+        try IVotingEscrow(collection).balanceOfNFT(tokenId) returns (uint256 power) {
+            return power;
+        } catch {
+            return 0;
+        }
     }
 
     /// @inheritdoc IMezoVeNFTAdapter
     function isExpired(address collection, uint256 tokenId) external view override returns (bool) {
         _requireSupported(collection);
-        IVotingEscrow.LockedBalance memory lock = IVotingEscrow(collection).locked(tokenId);
-        return block.timestamp >= lock.end;
+        // Defensive: if the locked() call fails or returns zero end, treat as not expired
+        // so the buy flow is not blocked by adapter errors on edge-case tokens.
+        try IVotingEscrow(collection).locked(tokenId) returns (IVotingEscrow.LockedBalance memory lock) {
+            if (lock.end == 0) return false; // permanent lock or uninitialized — not expired
+            return block.timestamp >= lock.end;
+        } catch {
+            return false;
+        }
     }
 
     /// @inheritdoc IMezoVeNFTAdapter
@@ -80,11 +94,12 @@ contract MezoVeNFTAdapter is IMezoVeNFTAdapter {
         uint256 tokenId
     ) external view override returns (uint256) {
         _requireSupported(collection);
-        IVotingEscrow.LockedBalance memory lock = IVotingEscrow(collection).locked(tokenId);
-        if (block.timestamp >= lock.end) {
+        try IVotingEscrow(collection).locked(tokenId) returns (IVotingEscrow.LockedBalance memory lock) {
+            if (lock.end == 0 || block.timestamp >= lock.end) return 0;
+            return lock.end - block.timestamp;
+        } catch {
             return 0;
         }
-        return lock.end - block.timestamp;
     }
 
     /// @inheritdoc IMezoVeNFTAdapter
@@ -109,20 +124,17 @@ contract MezoVeNFTAdapter is IMezoVeNFTAdapter {
         uint256 tokenId
     ) external view returns (uint256 healthBps) {
         _requireSupported(collection);
-        IVotingEscrow.LockedBalance memory lock = IVotingEscrow(collection).locked(tokenId);
+        try IVotingEscrow(collection).locked(tokenId) returns (IVotingEscrow.LockedBalance memory lock) {
+            if (lock.end == 0 || block.timestamp >= lock.end) return 0;
 
-        if (block.timestamp >= lock.end) {
+            uint256 remaining = lock.end - block.timestamp;
+            uint256 maxLock = collection == veBTC ? MAX_LOCK_VEBTC : MAX_LOCK_VEMEZO;
+
+            if (remaining >= maxLock) return 10000;
+            return (remaining * 10000) / maxLock;
+        } catch {
             return 0;
         }
-
-        uint256 remaining = lock.end - block.timestamp;
-        uint256 maxLock = collection == veBTC ? MAX_LOCK_VEBTC : MAX_LOCK_VEMEZO;
-
-        if (remaining >= maxLock) {
-            return 10000;
-        }
-
-        return (remaining * 10000) / maxLock;
     }
 
     /// @dev Require collection to be veBTC or veMEZO
