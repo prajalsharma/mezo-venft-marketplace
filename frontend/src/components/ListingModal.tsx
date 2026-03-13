@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useAccount, useReadContract } from "wagmi";
+import { useState, useEffect } from "react";
+import { useAccount, useReadContract, useWaitForTransactionReceipt } from "wagmi";
 import { formatEther, parseEther } from "viem";
 import { 
   X, 
@@ -34,31 +34,46 @@ interface ListingModalProps {
 export function ListingModal({ isOpen, onClose, veNFT }: ListingModalProps) {
   const { address } = useAccount();
   const { contracts } = useNetwork();
-  const { createListing, approveNFT, isPending, isConfirming, isSuccess } = useMarketplace();
-  
+  const { createListing, approveNFT, isPending, isConfirming, isSuccess, hash } = useMarketplace();
+
   const [price, setPrice] = useState("");
   const [paymentToken, setPaymentToken] = useState<"BTC" | "MEZO" | "MUSD">(PAYMENT_TOKENS[0].symbol);
+  // "approve" → waiting for NFT approval tx, "list" → ready to submit listing tx
   const [step, setStep] = useState<"approve" | "list">("approve");
+
+  // Advance from approve → list only after the approval tx is confirmed on-chain
+  const { isSuccess: approvalConfirmed } = useWaitForTransactionReceipt({ hash });
+  useEffect(() => {
+    if (approvalConfirmed && step === "approve") {
+      setStep("list");
+    }
+  }, [approvalConfirmed]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Reset step when modal closes/reopens for a different NFT
+  useEffect(() => {
+    if (!isOpen) {
+      setStep("approve");
+      setPrice("");
+    }
+  }, [isOpen]);
 
   if (!veNFT) return null;
 
+  const nftContract = veNFT.collection === "veBTC" ? contracts.veBTC : contracts.veMEZO;
+  const paymentTokenAddr = paymentToken === "BTC"
+    ? contracts.BTC
+    : paymentToken === "MEZO"
+    ? contracts.MEZO
+    : contracts.MUSD;
+
   const handleList = async () => {
     try {
-      const nftContract = veNFT.collection === "veBTC" ? contracts.veBTC : contracts.veMEZO;
-      const paymentTokenAddr = PAYMENT_TOKENS.find(t => t.symbol === paymentToken)?.isNative 
-        ? contracts.BTC 
-        : paymentToken === "MEZO" ? contracts.MEZO : contracts.MUSD;
-
       if (step === "approve") {
-        await approveNFT(nftContract, veNFT.tokenId);
-        setStep("list");
+        // Approve the marketplace to transfer this specific NFT
+        approveNFT(nftContract, veNFT.tokenId);
+        // Step advances automatically via useEffect once tx confirms
       } else {
-        await createListing(
-          nftContract,
-          veNFT.tokenId,
-          parseEther(price),
-          paymentTokenAddr
-        );
+        createListing(nftContract, veNFT.tokenId, parseEther(price), paymentTokenAddr);
       }
     } catch (error) {
       console.error("Listing failed:", error);

@@ -252,15 +252,17 @@ export function useMarketplace() {
   const { writeContract, data: hash, isPending, error } = useWriteContract();
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
 
-  const marketplaceAddress = contracts.marketplace as `0x${string}` | undefined;
-  const adapterAddress = contracts.adapter as `0x${string}` | undefined;
+  const ZERO = "0x0000000000000000000000000000000000000000";
+  const marketplaceAddress = contracts.marketplace as `0x${string}`;
+  const adapterAddress = contracts.adapter as `0x${string}`;
+  const isMarketplaceReady = !!marketplaceAddress && marketplaceAddress !== ZERO;
 
   const { data: nextListingId, refetch: refetchCount } = useReadContract({
     address: marketplaceAddress,
     abi: MARKETPLACE_ABI,
     functionName: "nextListingId",
     query: {
-      enabled: !!marketplaceAddress && marketplaceAddress !== "0x0000000000000000000000000000000000000000",
+      enabled: isMarketplaceReady,
     },
   });
 
@@ -270,7 +272,7 @@ export function useMarketplace() {
     price: bigint,
     paymentToken: string
   ) => {
-    if (!marketplaceAddress) throw new Error("Marketplace not deployed");
+    if (!isMarketplaceReady) throw new Error("Marketplace not deployed");
     writeContract({
       address: marketplaceAddress,
       abi: MARKETPLACE_ABI,
@@ -281,7 +283,7 @@ export function useMarketplace() {
 
   // Buy with native BTC (single tx, attach msg.value)
   const buyListing = async (listingId: number, price: bigint, isNativePayment: boolean) => {
-    if (!marketplaceAddress) throw new Error("Marketplace not deployed");
+    if (!isMarketplaceReady) throw new Error("Marketplace not deployed");
     writeContract({
       address: marketplaceAddress,
       abi: MARKETPLACE_ABI,
@@ -306,7 +308,7 @@ export function useMarketplace() {
 
   // Step 2 of ERC-20 buy: call buyNFT after approval is confirmed
   const executeBuy = async (listingId: number) => {
-    if (!marketplaceAddress) throw new Error("Marketplace not deployed");
+    if (!isMarketplaceReady) throw new Error("Marketplace not deployed");
     writeContract({
       address: marketplaceAddress,
       abi: MARKETPLACE_ABI,
@@ -316,7 +318,7 @@ export function useMarketplace() {
   };
 
   const cancelListing = async (listingId: number) => {
-    if (!marketplaceAddress) throw new Error("Marketplace not deployed");
+    if (!isMarketplaceReady) throw new Error("Marketplace not deployed");
     writeContract({
       address: marketplaceAddress,
       abi: MARKETPLACE_ABI,
@@ -326,7 +328,7 @@ export function useMarketplace() {
   };
 
   const approveNFT = async (collection: string, tokenId: bigint) => {
-    if (!marketplaceAddress) throw new Error("Marketplace not deployed");
+    if (!isMarketplaceReady) throw new Error("Marketplace not deployed");
     writeContract({
       address: collection as `0x${string}`,
       abi: ERC721_ABI,
@@ -353,7 +355,7 @@ export function useMarketplace() {
     functionName: "getUserListings",
     args: address ? [address] : undefined,
     query: {
-      enabled: !!marketplaceAddress && !!address,
+      enabled: isMarketplaceReady && !!address,
     },
   });
 
@@ -384,8 +386,11 @@ export function useMarketplace() {
 export function useListing(listingId: number) {
   const { contracts } = useNetwork();
 
-  const marketplaceAddress = contracts.marketplace as `0x${string}` | undefined;
-  const adapterAddress = contracts.adapter as `0x${string}` | undefined;
+  const ZERO = "0x0000000000000000000000000000000000000000";
+  const marketplaceAddress = contracts.marketplace as `0x${string}`;
+  const adapterAddress = contracts.adapter as `0x${string}`;
+  const isMarketplaceReady = !!marketplaceAddress && marketplaceAddress !== ZERO;
+  const isAdapterReady = !!adapterAddress && adapterAddress !== ZERO;
 
   const { data: listingData, isLoading } = useReadContract({
     address: marketplaceAddress,
@@ -393,7 +398,7 @@ export function useListing(listingId: number) {
     functionName: "listings",
     args: [BigInt(listingId)],
     query: {
-      enabled: !!marketplaceAddress && marketplaceAddress !== "0x0000000000000000000000000000000000000000",
+      enabled: isMarketplaceReady,
     },
   });
 
@@ -420,7 +425,7 @@ export function useListing(listingId: number) {
     functionName: "getIntrinsicValue",
     args: collection && tokenId !== undefined ? [collection, tokenId] : undefined,
     query: {
-      enabled: !!adapterAddress && !!collection && tokenId !== undefined,
+      enabled: isAdapterReady && !!collection && tokenId !== undefined,
     },
   });
 
@@ -469,11 +474,11 @@ export function useUserVeNFTs() {
   const { address } = useAccount();
   const { contracts } = useNetwork();
 
-  const veBTCAddress  = contracts.veBTC  as `0x${string}`;
-  const veMEZOAddress = contracts.veMEZO as `0x${string}`;
+  const ZERO = "0x0000000000000000000000000000000000000000";
+  const veBTCAddress   = contracts.veBTC   as `0x${string}`;
+  const veMEZOAddress  = contracts.veMEZO  as `0x${string}`;
   const adapterAddress = contracts.adapter as `0x${string}`;
-  const isAdapterDeployed =
-    adapterAddress !== "0x0000000000000000000000000000000000000000";
+  const isAdapterDeployed = !!adapterAddress && adapterAddress !== ZERO;
 
   // Step 1: get token counts via ERC-721 balanceOf
   const { data: veBTCCount, isLoading: veBTCCountLoading } = useReadContract({
