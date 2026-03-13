@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { useAccount } from "wagmi";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import Link from "next/link";
@@ -22,9 +22,23 @@ import { useMarketplace, useListing, useUserVeNFTs } from "@/hooks/useMarketplac
 import { ListingModal } from "@/components/ListingModal";
 import { VeNFTCard } from "@/components/VeNFTCard";
 
-function UserListingItem({ listingId }: { listingId: number }) {
+function UserListingItem({
+  listingId,
+  onActiveChange,
+}: {
+  listingId: number;
+  onActiveChange?: (id: number, active: boolean) => void;
+}) {
   const { listing, isLoading } = useListing(listingId);
   const { cancelListing, isPending, isConfirming } = useMarketplace();
+
+  // Report active state to parent once data is loaded
+  const active = listing?.active ?? false;
+  useEffect(() => {
+    if (!isLoading) {
+      onActiveChange?.(listingId, active);
+    }
+  }, [isLoading, active]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (isLoading) return <div className="h-24 bg-white/5 animate-pulse rounded-2xl" />;
   if (!listing || !listing.active) return null;
@@ -68,6 +82,20 @@ export default function MyListingsClient() {
   const { veNFTs: walletVeNFTs, isLoading: veNFTsLoading } = useUserVeNFTs();
   const [isListingModalOpen, setIsListingModalOpen] = useState(false);
   const [selectedVeNFT, setSelectedVeNFT] = useState<any>(null);
+  // Track how many of the user's listings are currently active on-chain.
+  // getUserListings returns all historical IDs; we count only active ones.
+  const [activeListingCount, setActiveListingCount] = useState(0);
+  const activeMapRef = useRef<Map<number, boolean>>(new Map());
+
+  const handleActiveChange = useCallback((id: number, active: boolean) => {
+    const prev = activeMapRef.current.get(id);
+    if (prev !== active) {
+      activeMapRef.current.set(id, active);
+      let count = 0;
+      activeMapRef.current.forEach((v) => { if (v) count++; });
+      setActiveListingCount(count);
+    }
+  }, []);
 
   if (!isConnected) {
     return (
@@ -124,7 +152,11 @@ export default function MyListingsClient() {
               {userListingIds && userListingIds.length > 0 ? (
                 <div className="space-y-4">
                   {userListingIds.map((id) => (
-                    <UserListingItem key={id.toString()} listingId={Number(id)} />
+                    <UserListingItem
+                      key={id.toString()}
+                      listingId={Number(id)}
+                      onActiveChange={handleActiveChange}
+                    />
                   ))}
                 </div>
               ) : (
@@ -214,7 +246,7 @@ export default function MyListingsClient() {
                 </div>
                 <div className="flex justify-between items-center text-sm">
                   <span className="text-mezo-muted">Active Listings</span>
-                  <span className="font-bold">{userListingIds?.length || 0}</span>
+                  <span className="font-bold">{activeListingCount}</span>
                 </div>
                 <div className="flex justify-between items-center text-sm">
                   <span className="text-mezo-muted">Protocol Fees Saved</span>

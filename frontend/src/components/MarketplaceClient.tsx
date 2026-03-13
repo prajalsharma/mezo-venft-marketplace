@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Search,
@@ -17,15 +17,26 @@ import { FilterSidebar } from "@/components/FilterSidebar";
 import { BuyModal } from "@/components/BuyModal";
 import { useMarketplace, useListing, Listing } from "@/hooks/useMarketplace";
 
-// Renders a single listing card; passes the full Listing object up on buy
+// Renders a single listing card; passes the full Listing object up on buy.
+// Reports whether this listing is active so the parent can count active listings.
 function MarketplaceListingItem({
   listingId,
   onBuy,
+  onActiveChange,
 }: {
   listingId: number;
   onBuy: (listing: Listing) => void;
+  onActiveChange?: (listingId: number, active: boolean) => void;
 }) {
   const { listing, isLoading } = useListing(listingId);
+
+  // Notify parent of active state once data is loaded
+  const prevActive = useMemo(() => listing?.active, [listing?.active]);
+  useMemo(() => {
+    if (!isLoading && listing !== null) {
+      onActiveChange?.(listingId, listing?.active ?? false);
+    }
+  }, [isLoading, listing?.active]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (isLoading) return <VeNFTCardSkeleton />;
   if (!listing || !listing.active) return null;
@@ -94,6 +105,21 @@ export default function MarketplaceClient() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   // The listing the user clicked "Buy" on — opens BuyModal
   const [activeBuyListing, setActiveBuyListing] = useState<Listing | null>(null);
+
+  // Track which listing IDs are active so the count reflects real on-chain state.
+  // nextListingId counts all historical listings; active count is what matters.
+  const activeMapRef = useRef<Map<number, boolean>>(new Map());
+  const [activeCount, setActiveCount] = useState(0);
+
+  const handleActiveChange = useCallback((listingId: number, active: boolean) => {
+    const prev = activeMapRef.current.get(listingId);
+    if (prev !== active) {
+      activeMapRef.current.set(listingId, active);
+      let count = 0;
+      activeMapRef.current.forEach((v) => { if (v) count++; });
+      setActiveCount(count);
+    }
+  }, []);
 
   const listingIds = useMemo(
     () => Array.from({ length: nextListingId }, (_, i) => i).reverse(),
@@ -191,7 +217,7 @@ export default function MarketplaceClient() {
               <div className="flex items-center justify-between mb-6 px-2">
                 <div className="flex items-center gap-4">
                   <p className="text-sm font-bold text-mezo-muted">
-                    Showing <span className="text-white">{nextListingId}</span> listings
+                    Showing <span className="text-white">{activeCount}</span> active listing{activeCount !== 1 ? "s" : ""}
                   </p>
                   <div className="h-4 w-px bg-mezo-border" />
                   <div className="flex items-center gap-2 text-mezo-success text-[10px] font-black uppercase tracking-widest">
@@ -209,6 +235,7 @@ export default function MarketplaceClient() {
                         key={id}
                         listingId={id}
                         onBuy={setActiveBuyListing}
+                        onActiveChange={handleActiveChange}
                       />
                     ))}
                   </AnimatePresence>

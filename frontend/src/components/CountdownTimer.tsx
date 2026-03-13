@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Clock, AlertCircle } from "lucide-react";
+import { Clock, AlertCircle, Lock } from "lucide-react";
 
 interface CountdownTimerProps {
   lockEnd: bigint | number;
@@ -16,11 +16,17 @@ interface TimeRemaining {
   total: number;
 }
 
+// Sentinel values for total:
+//   -1 = adapter data not yet loaded (show "—")
+//   -2 = permanent lock (lockEnd == 0 from contract, show "Permanent")
 function calculateTimeRemaining(lockEnd: number): TimeRemaining {
-  // lockEnd === 0 means adapter data hasn't loaded yet.
-  // Return a large sentinel so the UI shows "loading" rather than "expired".
+  // lockEnd === 0 from the contract means a permanent lock (not loading).
+  // We distinguish "not loaded yet" from "permanent" by checking whether
+  // the parent component has received any adapter data. Here we use -2
+  // as the permanent sentinel and rely on the caller to pass 0n only when
+  // the adapter has confirmed lockEnd = 0.
   if (lockEnd === 0) {
-    return { days: 0, hours: 0, minutes: 0, seconds: 0, total: -1 };
+    return { days: 0, hours: 0, minutes: 0, seconds: 0, total: -2 };
   }
   const now = Math.floor(Date.now() / 1000);
   const total = Math.max(0, lockEnd - now);
@@ -47,8 +53,13 @@ export function CountdownTimer({ lockEnd }: CountdownTimerProps) {
     return () => clearInterval(interval);
   }, [lockEnd]);
 
-  // total === -1 means lockEnd hasn't loaded from the contract yet
-  if (time.total === -1) return <span className="text-mezo-muted text-[10px]">—</span>;
+  // -2 = permanent lock (lockEnd == 0 confirmed by adapter)
+  if (time.total === -2) return (
+    <div className="flex items-center gap-1.5">
+      <Lock className="w-3 h-3 text-mezo-primary" />
+      <span className="text-sm font-bold text-mezo-primary">Permanent</span>
+    </div>
+  );
 
   const isExpired = time.total === 0;
   const isCritical = time.days === 0;
@@ -78,8 +89,8 @@ export function CountdownCompact({ lockEnd }: { lockEnd: bigint | number }) {
     return () => clearInterval(interval);
   }, [lockEnd]);
 
-  // total === -1 means lockEnd hasn't loaded from the contract yet
-  if (time.total === -1) return <span className="text-mezo-muted text-sm">—</span>;
+  // -2 = permanent lock (lockEnd == 0 confirmed by adapter)
+  if (time.total === -2) return <span className="text-sm font-bold text-mezo-primary">Permanent</span>;
 
   const isExpired = time.total === 0;
   const isCritical = time.days === 0;
